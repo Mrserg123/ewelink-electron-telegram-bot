@@ -1,0 +1,16 @@
+{
+  "name": "ewelink-telegram-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "eWeLink Telegram Bot Template",
+  "main": "index.js",
+  "scripts": {
+    "build": "ncc build index.js -o dist -m"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "^0.38.1"
+  }
+}
