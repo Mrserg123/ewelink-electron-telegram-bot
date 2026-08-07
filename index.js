@@ -14,6 +14,8 @@
 const { Telegraf } = require("telegraf");
 const https = require("https");
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 
 // --- Configuration ---
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -21,6 +23,7 @@ const BOT_NAME = process.env.BOT_NAME || "eWeLink Bot";
 const EWELINK_AT = process.env.EWELINK_AT;
 const EWELINK_APIKEY = process.env.EWELINK_APIKEY;
 const EWELINK_REGION = process.env.EWELINK_REGION || "eu";
+let botCurrency = process.env.BOT_CURRENCY || "USD";
 
 if (!BOT_TOKEN) {
   sendLog("error", "BOT_TOKEN is not provided. Exiting.");
@@ -115,7 +118,8 @@ async function fetchDevices() {
     if (response.error === 0 && response.data && response.data.thingList) {
       return response.data.thingList
         .filter((item) => item.itemType === 1 || item.itemType === 2)
-        .map((item) => item.itemData);
+        .map((item) => item.itemData)
+        .filter((device) => device.params && typeof device.params.switch !== "undefined");
     }
 
     sendLog("warn", `fetchDevices API error: ${JSON.stringify(response)}`);
@@ -182,7 +186,16 @@ bot.telegram.getMe().then((me) => {
 // --- Bot Commands ---
 
 bot.command('start', async (ctx) => {
+  const chatId = ctx.chat.id;
   sendLog("info", `/start from ${ctx.from.username || ctx.from.id}`);
+  
+  try {
+    fs.writeFileSync(path.join(process.cwd(), 'chat_id.json'), JSON.stringify({ chatId }));
+    sendLog("info", `Saved chat ID: ${chatId} for push notifications.`);
+  } catch (e) {
+    sendLog("error", `Failed to save chatId: ${e.message}`);
+  }
+
   const welcomeText = [
     `👋 *Welcome to ${BOT_NAME}!*`,
     "",
@@ -193,6 +206,7 @@ bot.command('start', async (ctx) => {
     "/on `deviceId` — Turn on a device",
     "/off `deviceId` — Turn off a device",
     "/status — Quick status of all devices",
+    "/energy — Power monitoring report",
     "/help — Show this message",
   ].join("\n");
 
@@ -207,6 +221,7 @@ bot.command('help', async (ctx) => {
     "/on `deviceId` — Turn on a device",
     "/off `deviceId` — Turn off a device",
     "/status — Quick overview of all devices",
+    "/energy — Power monitoring report",
     "/help — Show this message",
   ].join("\n");
 
@@ -222,14 +237,16 @@ bot.command('devices', async (ctx) => {
     return ctx.reply("No devices found.");
   }
 
-  // Build inline keyboard
-  const inlineKeyboard = devices.map((device) => {
-    const name = device.name || device.deviceid;
-    return [
-      { text: `⚡ ${name} ON`, callback_data: `on_${device.deviceid}` },
-      { text: `💤 ${name} OFF`, callback_data: `off_${device.deviceid}` },
-    ];
-  });
+  // Build inline keyboard (only for online devices)
+  const inlineKeyboard = devices
+    .filter((device) => device.online)
+    .map((device) => {
+      const name = device.name || device.deviceid;
+      return [
+        { text: `⚡ ${name} ON`, callback_data: `on_${device.deviceid}` },
+        { text: `💤 ${name} OFF`, callback_data: `off_${device.deviceid}` },
+      ];
+    });
 
   const deviceList = devices.map(formatDeviceLine).join("\n\n");
 
@@ -250,6 +267,32 @@ bot.command('status', async (ctx) => {
 
   const statusLines = devices.map(formatDeviceLine).join("\n\n");
   await ctx.replyWithMarkdown(`📊 *Device Status:*\n\n${statusLines}`);
+});
+
+bot.command('energy', async (ctx) => {
+  sendLog("info", `/energy from ${ctx.from.username || ctx.from.id}`);
+  await ctx.reply("⏳ Fetching energy data...");
+
+  const devices = await fetchDevices();
+  const energyDevices = devices.filter(d => d.params && (d.params.power !== undefined || d.params.hundredDaysKwhData));
+
+  if (energyDevices.length === 0) {
+    return ctx.reply("No energy monitoring devices found.");
+  }
+
+  let report = `📊 *Energy Report (${botCurrency}):*\n\n`;
+  for (const device of energyDevices) {
+    const name = device.name || device.deviceid;
+    const power = device.params.power ? (parseFloat(device.params.power) / 100).toFixed(2) + " W" : "N/A";
+    const voltage = device.params.voltage ? (parseFloat(device.params.voltage) / 100).toFixed(2) + " V" : "N/A";
+    const current = device.params.current ? (parseFloat(device.params.current) / 100).toFixed(2) + " A" : "N/A";
+    
+    report += `⚡ *${name}*\n`;
+    report += `Power: ${power}\n`;
+    report += `Voltage: ${voltage} | Current: ${current}\n\n`;
+  }
+
+  await ctx.replyWithMarkdown(report);
 });
 
 bot.command('on', async (ctx) => {
@@ -317,6 +360,26 @@ process.once("SIGINT", () => {
   bot.stop('SIGINT');
   if (process.send) process.send({ type: "status", status: "stopped" });
   process.exit(0);
+});
+
+// --- IPC Notification Listener ---
+process.on("message", async (msg) => {
+  if (msg.type === "notify") {
+    try {
+      const chatFile = path.join(process.cwd(), 'chat_id.json');
+      if (fs.existsSync(chatFile)) {
+        const { chatId } = JSON.parse(fs.readFileSync(chatFile));
+        await bot.telegram.sendMessage(chatId, msg.message, { parse_mode: "Markdown" });
+      } else {
+        sendLog("warn", "Cannot send notification: No chat_id.json found. User must send /start first.");
+      }
+    } catch (e) {
+      sendLog("error", `Failed to send push notification: ${e.message}`);
+    }
+  } else if (msg.type === "config") {
+    if (msg.currency) botCurrency = msg.currency;
+    sendLog("info", `Updated bot config via IPC. Currency: ${botCurrency}`);
+  }
 });
 
 process.once("SIGTERM", () => {
