@@ -199,12 +199,10 @@ bot.command('start', async (ctx) => {
   const chatId = ctx.chat.id;
   sendLog("info", `/start from ${ctx.from.username || ctx.from.id}`);
   
-  try {
-    fs.writeFileSync(path.join(process.cwd(), 'chat_id.json'), JSON.stringify({ chatId }));
-    sendLog("info", `Saved chat ID: ${chatId} for push notifications.`);
-  } catch (e) {
-    sendLog("error", `Failed to save chatId: ${e.message}`);
+  if (process.send) {
+    process.send({ type: "chat_id", chatId });
   }
+  sendLog("info", `Saved chat ID: ${chatId} for push notifications via Electron store.`);
 
   const welcomeText = [
     `👋 *Welcome to ${BOT_NAME}!*`,
@@ -408,12 +406,10 @@ process.once("SIGINT", () => {
 process.on("message", async (msg) => {
   if (msg.type === "notify") {
     try {
-      const chatFile = path.join(process.cwd(), 'chat_id.json');
-      if (fs.existsSync(chatFile)) {
-        const { chatId } = JSON.parse(fs.readFileSync(chatFile));
-        await bot.telegram.sendMessage(chatId, msg.message, { parse_mode: "Markdown" });
+      if (msg.chatId) {
+        await bot.telegram.sendMessage(msg.chatId, msg.message, { parse_mode: "Markdown" });
       } else {
-        sendLog("warn", "Cannot send notification: No chat_id.json found. User must send /start first.");
+        sendLog("warn", "Cannot send notification: No chat ID configured. User must send /start to bot first.");
       }
     } catch (e) {
       sendLog("error", `Failed to send push notification: ${e.message}`);
