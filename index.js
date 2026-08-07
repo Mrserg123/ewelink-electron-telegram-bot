@@ -1,5 +1,5 @@
 /**
- * eWeLink Telegram Bot Template
+ * eWeLink Telegram Bot Template (using Telegraf)
  *
  * Receives configuration via environment variables:
  *   BOT_TOKEN       — Telegram bot token from @BotFather
@@ -11,7 +11,7 @@
  * Communicates with the parent Electron process via process.send().
  */
 
-const TelegramBot = require("node-telegram-bot-api");
+const { Telegraf } = require("telegraf");
 const https = require("https");
 const http = require("http");
 
@@ -30,7 +30,7 @@ if (!BOT_TOKEN) {
 if (!EWELINK_AT || !EWELINK_APIKEY) {
   sendLog(
     "error",
-    "eWeLink credentials (EWELINK_AT, EWELINK_APIKEY) are not provided. Exiting.",
+    "eWeLink credentials (EWELINK_AT, EWELINK_APIKEY) are not provided. Exiting."
   );
   process.exit(1);
 }
@@ -40,7 +40,12 @@ if (!EWELINK_AT || !EWELINK_APIKEY) {
 /** Send a log message to the parent Electron process */
 function sendLog(level, message) {
   if (process.send) {
-    process.send({ type: "log", level, message, timestamp: new Date().toISOString() });
+    process.send({
+      type: "log",
+      level,
+      message,
+      timestamp: new Date().toISOString(),
+    });
   }
   console.log(`[${level.toUpperCase()}] ${message}`);
 }
@@ -55,10 +60,6 @@ function getApiBase() {
 
 /**
  * Make an HTTP request to the eWeLink API.
- * @param {string} method - HTTP method
- * @param {string} path - API path (e.g., "/v2/device/thing")
- * @param {object|null} body - Request body for POST/PUT
- * @returns {Promise<object>} Parsed JSON response
  */
 function ewelinkRequest(method, path, body = null) {
   return new Promise((resolve, reject) => {
@@ -114,7 +115,6 @@ async function fetchDevices() {
     });
 
     if (response.error === 0 && response.data && response.data.thingList) {
-      // Filter only physical devices (itemType 1 or 2), skip groups (3)
       return response.data.thingList
         .filter((item) => item.itemType === 1 || item.itemType === 2)
         .map((item) => item.itemData);
@@ -136,7 +136,6 @@ async function setDeviceStatus(deviceId, params) {
       id: deviceId,
       params,
     });
-
     return response;
   } catch (err) {
     sendLog("error", `setDeviceStatus failed for ${deviceId}: ${err.message}`);
@@ -144,9 +143,7 @@ async function setDeviceStatus(deviceId, params) {
   }
 }
 
-/**
- * Format device name + online status for display
- */
+/** Format device name + online status for display */
 function formatDeviceLine(device, index) {
   const name = device.name || device.deviceid;
   const online = device.online ? "🟢" : "🔴";
@@ -160,44 +157,34 @@ function formatDeviceLine(device, index) {
 }
 
 // --- Bot Initialization ---
-
 sendLog("info", `Starting ${BOT_NAME}...`);
 sendLog("info", "Validating bot token...");
 
-// Initialize the bot with polling immediately to ensure event handlers bind correctly.
-const bot = new TelegramBot(BOT_TOKEN, { polling: true });
+const bot = new Telegraf(BOT_TOKEN);
 
-let pollingErrorCount = 0;
-const MAX_POLLING_ERRORS = 5;
-
-// We still fetch getMe to display the bot name and verify the token.
-(async () => {
-  try {
-    const me = await bot.getMe();
+// Fetch bot info and start polling
+bot.telegram.getMe().then((me) => {
     sendLog("info", `✅ Token valid! Bot: @${me.username} (${me.first_name})`);
     sendLog("info", `${BOT_NAME} is polling for messages...`);
-
-    // Notify parent process that bot is running
+    
     if (process.send) {
-      process.send({ type: "status", status: "running" });
+        process.send({ type: "status", status: "running" });
     }
-  } catch (err) {
+    
+    bot.launch();
+}).catch((err) => {
     sendLog("error", `❌ Invalid bot token: ${err.message}`);
     sendLog("error", "Please check your token from @BotFather and try again.");
-    bot.stopPolling();
     if (process.send) {
-      process.send({ type: "status", status: "stopped" });
+        process.send({ type: "status", status: "stopped" });
     }
     process.exit(1);
-  }
-})();
+});
 
 // --- Bot Commands ---
 
-bot.onText(/\/start/, async (msg) => {
-  const chatId = msg.chat.id;
-  sendLog("info", `/start from ${msg.from.username || msg.from.id}`);
-
+bot.command('start', async (ctx) => {
+  sendLog("info", `/start from ${ctx.from.username || ctx.from.id}`);
   const welcomeText = [
     `👋 *Welcome to ${BOT_NAME}!*`,
     "",
@@ -211,12 +198,10 @@ bot.onText(/\/start/, async (msg) => {
     "/help — Show this message",
   ].join("\n");
 
-  bot.sendMessage(chatId, welcomeText, { parse_mode: "Markdown" });
+  await ctx.replyWithMarkdown(welcomeText);
 });
 
-bot.onText(/\/help/, async (msg) => {
-  const chatId = msg.chat.id;
-
+bot.command('help', async (ctx) => {
   const helpText = [
     "📋 *Available Commands:*",
     "",
@@ -227,201 +212,124 @@ bot.onText(/\/help/, async (msg) => {
     "/help — Show this message",
   ].join("\n");
 
-  bot.sendMessage(chatId, helpText, { parse_mode: "Markdown" });
+  await ctx.replyWithMarkdown(helpText);
 });
 
-bot.onText(/\/devices/, async (msg) => {
-  const chatId = msg.chat.id;
-  sendLog("info", `/devices from ${msg.from.username || msg.from.id}`);
-
-  bot.sendMessage(chatId, "⏳ Fetching devices...");
+bot.command('devices', async (ctx) => {
+  sendLog("info", `/devices from ${ctx.from.username || ctx.from.id}`);
+  await ctx.reply("⏳ Fetching devices...");
 
   const devices = await fetchDevices();
-
   if (devices.length === 0) {
-    bot.sendMessage(chatId, "No devices found.");
-    return;
+    return ctx.reply("No devices found.");
   }
 
-  // Build inline keyboard with ON/OFF buttons for each device
+  // Build inline keyboard
   const inlineKeyboard = devices.map((device) => {
     const name = device.name || device.deviceid;
     return [
-      {
-        text: `⚡ ${name} ON`,
-        callback_data: `on_${device.deviceid}`,
-      },
-      {
-        text: `💤 ${name} OFF`,
-        callback_data: `off_${device.deviceid}`,
-      },
+      { text: `⚡ ${name} ON`, callback_data: `on_${device.deviceid}` },
+      { text: `💤 ${name} OFF`, callback_data: `off_${device.deviceid}` },
     ];
   });
 
   const deviceList = devices.map(formatDeviceLine).join("\n\n");
 
-  bot.sendMessage(chatId, `📱 *Your Devices:*\n\n${deviceList}`, {
-    parse_mode: "Markdown",
+  await ctx.replyWithMarkdown(`📱 *Your Devices:*\n\n${deviceList}`, {
     reply_markup: {
       inline_keyboard: inlineKeyboard,
     },
   });
 });
 
-bot.onText(/\/status/, async (msg) => {
-  const chatId = msg.chat.id;
-  sendLog("info", `/status from ${msg.from.username || msg.from.id}`);
-
+bot.command('status', async (ctx) => {
+  sendLog("info", `/status from ${ctx.from.username || ctx.from.id}`);
   const devices = await fetchDevices();
-
+  
   if (devices.length === 0) {
-    bot.sendMessage(chatId, "No devices found.");
-    return;
+    return ctx.reply("No devices found.");
   }
 
   const statusLines = devices.map(formatDeviceLine).join("\n\n");
-
-  bot.sendMessage(chatId, `📊 *Device Status:*\n\n${statusLines}`, {
-    parse_mode: "Markdown",
-  });
+  await ctx.replyWithMarkdown(`📊 *Device Status:*\n\n${statusLines}`);
 });
 
-bot.onText(/\/on\s+(.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const deviceId = match[1].trim();
-  sendLog("info", `/on ${deviceId} from ${msg.from.username || msg.from.id}`);
+bot.command('on', async (ctx) => {
+  const deviceId = ctx.message.text.split(' ')[1];
+  if (!deviceId) return ctx.replyWithMarkdown("Please specify device ID. Example: `/on 10001abcde`");
+  
+  sendLog("info", `/on ${deviceId} from ${ctx.from.username || ctx.from.id}`);
+  await ctx.replyWithMarkdown(`⏳ Turning ON \`${deviceId}\`...`);
 
-  bot.sendMessage(chatId, `⏳ Turning ON \`${deviceId}\`...`, {
-    parse_mode: "Markdown",
-  });
-
-  const result = await setDeviceStatus(deviceId, { switch: "on" });
-
+  const result = await setDeviceStatus(deviceId.trim(), { switch: "on" });
   if (result.error === 0) {
-    bot.sendMessage(chatId, `✅ Device \`${deviceId}\` turned *ON*`, {
-      parse_mode: "Markdown",
-    });
+    await ctx.replyWithMarkdown(`✅ Device \`${deviceId}\` turned *ON*`);
   } else {
-    bot.sendMessage(
-      chatId,
-      `❌ Failed to turn on \`${deviceId}\`: ${result.msg || "Unknown error"}`,
-      { parse_mode: "Markdown" },
-    );
+    await ctx.replyWithMarkdown(`❌ Failed to turn on \`${deviceId}\`: ${result.msg || "Unknown error"}`);
   }
 });
 
-bot.onText(/\/off\s+(.+)/, async (msg, match) => {
-  const chatId = msg.chat.id;
-  const deviceId = match[1].trim();
-  sendLog("info", `/off ${deviceId} from ${msg.from.username || msg.from.id}`);
+bot.command('off', async (ctx) => {
+  const deviceId = ctx.message.text.split(' ')[1];
+  if (!deviceId) return ctx.replyWithMarkdown("Please specify device ID. Example: `/off 10001abcde`");
+  
+  sendLog("info", `/off ${deviceId} from ${ctx.from.username || ctx.from.id}`);
+  await ctx.replyWithMarkdown(`⏳ Turning OFF \`${deviceId}\`...`);
 
-  bot.sendMessage(chatId, `⏳ Turning OFF \`${deviceId}\`...`, {
-    parse_mode: "Markdown",
-  });
-
-  const result = await setDeviceStatus(deviceId, { switch: "off" });
-
+  const result = await setDeviceStatus(deviceId.trim(), { switch: "off" });
   if (result.error === 0) {
-    bot.sendMessage(chatId, `✅ Device \`${deviceId}\` turned *OFF*`, {
-      parse_mode: "Markdown",
-    });
+    await ctx.replyWithMarkdown(`✅ Device \`${deviceId}\` turned *OFF*`);
   } else {
-    bot.sendMessage(
-      chatId,
-      `❌ Failed to turn off \`${deviceId}\`: ${result.msg || "Unknown error"}`,
-      { parse_mode: "Markdown" },
-    );
+    await ctx.replyWithMarkdown(`❌ Failed to turn off \`${deviceId}\`: ${result.msg || "Unknown error"}`);
   }
 });
 
-// --- Callback Query Handler (inline keyboard buttons) ---
-
-bot.on("callback_query", async (callbackQuery) => {
-  const chatId = callbackQuery.message.chat.id;
-  const data = callbackQuery.data;
+// --- Callback Query Handler ---
+bot.on("callback_query", async (ctx) => {
+  const data = ctx.callbackQuery.data;
+  if (!data) return;
 
   const [action, deviceId] = data.split("_");
-
   if (!deviceId) {
-    bot.answerCallbackQuery(callbackQuery.id, { text: "Unknown action" });
-    return;
+    return ctx.answerCbQuery("Unknown action");
   }
 
   const params = { switch: action === "on" ? "on" : "off" };
   const emoji = action === "on" ? "⚡" : "💤";
 
   sendLog("info", `Callback: ${action} ${deviceId}`);
-
-  bot.answerCallbackQuery(callbackQuery.id, {
-    text: `${emoji} ${action.toUpperCase()} ${deviceId}...`,
-  });
+  await ctx.answerCbQuery(`${emoji} ${action.toUpperCase()} ${deviceId}...`);
 
   const result = await setDeviceStatus(deviceId, params);
-
   if (result.error === 0) {
-    bot.sendMessage(
-      chatId,
-      `✅ Device \`${deviceId}\` turned *${action.toUpperCase()}*`,
-      { parse_mode: "Markdown" },
-    );
+    await ctx.replyWithMarkdown(`✅ Device \`${deviceId}\` turned *${action.toUpperCase()}*`);
   } else {
-    bot.sendMessage(
-      chatId,
-      `❌ Failed: ${result.msg || "Unknown error"}`,
-      { parse_mode: "Markdown" },
-    );
+    await ctx.replyWithMarkdown(`❌ Failed: ${result.msg || "Unknown error"}`);
   }
 });
 
 // --- Error Handling ---
-
-bot.on("polling_error", (err) => {
-  pollingErrorCount++;
-  sendLog("error", `Polling error (${pollingErrorCount}/${MAX_POLLING_ERRORS}): ${err.message}`);
-
-  // Auto-stop on repeated errors (e.g. invalid token, network down)
-  if (pollingErrorCount >= MAX_POLLING_ERRORS) {
-    sendLog("error", `Too many polling errors (${MAX_POLLING_ERRORS}). Stopping bot...`);
-    bot.stopPolling();
-    if (process.send) {
-      process.send({ type: "status", status: "stopped" });
-    }
-    process.exit(1);
-  }
-});
-
-bot.on("error", (err) => {
-  sendLog("error", `Bot error: ${err.message}`);
-});
-
-// Reset error counter on successful message receipt
-bot.on("message", () => {
-  pollingErrorCount = 0;
+bot.catch((err, ctx) => {
+  sendLog("error", `Bot error for ${ctx.updateType}: ${err.message}`);
 });
 
 // --- Graceful Shutdown ---
-
-process.on("SIGTERM", () => {
-  sendLog("info", "Received SIGTERM, stopping bot...");
-  bot.stopPolling();
-  if (process.send) {
-    process.send({ type: "status", status: "stopped" });
-  }
-  process.exit(0);
-});
-
-process.on("SIGINT", () => {
+process.once("SIGINT", () => {
   sendLog("info", "Received SIGINT, stopping bot...");
-  bot.stopPolling();
-  if (process.send) {
-    process.send({ type: "status", status: "stopped" });
-  }
+  bot.stop('SIGINT');
+  if (process.send) process.send({ type: "status", status: "stopped" });
   process.exit(0);
 });
 
-// Handle parent disconnect (Electron closed)
+process.once("SIGTERM", () => {
+  sendLog("info", "Received SIGTERM, stopping bot...");
+  bot.stop('SIGTERM');
+  if (process.send) process.send({ type: "status", status: "stopped" });
+  process.exit(0);
+});
+
 process.on("disconnect", () => {
   sendLog("info", "Parent process disconnected, stopping bot...");
-  bot.stopPolling();
+  bot.stop();
   process.exit(0);
 });
