@@ -24,6 +24,7 @@ const EWELINK_AT = process.env.EWELINK_AT;
 const EWELINK_APIKEY = process.env.EWELINK_APIKEY;
 const EWELINK_REGION = process.env.EWELINK_REGION || "eu";
 let botCurrency = process.env.BOT_CURRENCY || "USD";
+let botKwhPrice = parseFloat(process.env.BOT_KWH_PRICE) || 0;
 
 if (!BOT_TOKEN) {
   sendLog("error", "BOT_TOKEN is not provided. Exiting.");
@@ -280,7 +281,8 @@ bot.command('energy', async (ctx) => {
     return ctx.reply("No energy monitoring devices found.");
   }
 
-  let report = `📊 *Energy Report (${botCurrency}):*\n\n`;
+  let report = `📊 *Energy Report (${botCurrency}):*\n`;
+  report += `💰 *Price:* ${botKwhPrice} ${botCurrency} per kWh\n\n`;
   for (const device of energyDevices) {
     const name = device.name || device.deviceid;
     const power = device.params.power ? (parseFloat(device.params.power) / 100).toFixed(2) + " W" : "N/A";
@@ -378,7 +380,8 @@ process.on("message", async (msg) => {
     }
   } else if (msg.type === "config") {
     if (msg.currency) botCurrency = msg.currency;
-    sendLog("info", `Updated bot config via IPC. Currency: ${botCurrency}`);
+    if (typeof msg.kwhPrice !== "undefined") botKwhPrice = parseFloat(msg.kwhPrice) || 0;
+    sendLog("info", `Updated bot config via IPC. Currency: ${botCurrency}, kWh Price: ${botKwhPrice}`);
   }
 });
 
