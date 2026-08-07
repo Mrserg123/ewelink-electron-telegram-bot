@@ -164,19 +164,17 @@ function formatDeviceLine(device, index) {
 sendLog("info", `Starting ${BOT_NAME}...`);
 sendLog("info", "Validating bot token...");
 
-// First validate the token by calling getMe() without polling
-const bot = new TelegramBot(BOT_TOKEN, { polling: false });
+// Initialize the bot with polling immediately to ensure event handlers bind correctly.
+const bot = new TelegramBot(BOT_TOKEN, { polling: true });
 
 let pollingErrorCount = 0;
 const MAX_POLLING_ERRORS = 5;
 
+// We still fetch getMe to display the bot name and verify the token.
 (async () => {
   try {
     const me = await bot.getMe();
     sendLog("info", `✅ Token valid! Bot: @${me.username} (${me.first_name})`);
-
-    // Token is valid — start polling
-    bot.startPolling();
     sendLog("info", `${BOT_NAME} is polling for messages...`);
 
     // Notify parent process that bot is running
@@ -186,6 +184,7 @@ const MAX_POLLING_ERRORS = 5;
   } catch (err) {
     sendLog("error", `❌ Invalid bot token: ${err.message}`);
     sendLog("error", "Please check your token from @BotFather and try again.");
+    bot.stopPolling();
     if (process.send) {
       process.send({ type: "status", status: "stopped" });
     }
