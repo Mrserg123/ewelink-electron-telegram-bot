@@ -120,7 +120,12 @@ async function fetchDevices() {
       return response.data.thingList
         .filter((item) => item.itemType === 1 || item.itemType === 2)
         .map((item) => item.itemData)
-        .filter((device) => device.params && typeof device.params.switch !== "undefined");
+        .filter((device) => {
+          if (!device.params) return false;
+          return typeof device.params.switch !== "undefined" || 
+                 typeof device.params.switches !== "undefined" ||
+                 typeof device.params.state !== "undefined";
+        });
     }
 
     sendLog("warn", `fetchDevices API error: ${JSON.stringify(response)}`);
@@ -146,16 +151,20 @@ async function setDeviceStatus(deviceId, params) {
   }
 }
 
-/** Format device name + online status for display */
 function formatDeviceLine(device, index) {
   const name = device.name || device.deviceid;
   const online = device.online ? "🟢" : "🔴";
-  const power =
-    device.params && device.params.switch
-      ? device.params.switch === "on"
-        ? "⚡ ON"
-        : "💤 OFF"
-      : "";
+  let power = "";
+  if (device.params) {
+    if (typeof device.params.switch !== "undefined") {
+      power = device.params.switch === "on" ? "⚡ ON" : "💤 OFF";
+    } else if (typeof device.params.switches !== "undefined") {
+      const anyOn = device.params.switches.some(s => s.switch === "on");
+      power = anyOn ? "⚡ ON" : "💤 OFF";
+    } else if (typeof device.params.state !== "undefined") {
+      power = device.params.state === "on" ? "⚡ ON" : "💤 OFF";
+    }
+  }
   return `${index + 1}. ${online} *${name}*  ${power}\n\`${device.deviceid}\``;
 }
 
@@ -304,7 +313,16 @@ bot.command('on', async (ctx) => {
   sendLog("info", `/on ${deviceId} from ${ctx.from.username || ctx.from.id}`);
   await ctx.replyWithMarkdown(`⏳ Turning ON \`${deviceId}\`...`);
 
-  const result = await setDeviceStatus(deviceId.trim(), { switch: "on" });
+  const devices = await fetchDevices();
+  const device = devices.find(d => d.deviceid === deviceId.trim());
+  let params = { switch: "on" };
+  if (device && device.params && device.params.switches) {
+    params = { switches: device.params.switches.map(s => ({ switch: "on", outlet: s.outlet })) };
+  } else if (device && device.params && (device.params.state !== undefined)) {
+    params = { state: "on" };
+  }
+
+  const result = await setDeviceStatus(deviceId.trim(), params);
   if (result.error === 0) {
     await ctx.replyWithMarkdown(`✅ Device \`${deviceId}\` turned *ON*`);
   } else {
@@ -319,7 +337,16 @@ bot.command('off', async (ctx) => {
   sendLog("info", `/off ${deviceId} from ${ctx.from.username || ctx.from.id}`);
   await ctx.replyWithMarkdown(`⏳ Turning OFF \`${deviceId}\`...`);
 
-  const result = await setDeviceStatus(deviceId.trim(), { switch: "off" });
+  const devices = await fetchDevices();
+  const device = devices.find(d => d.deviceid === deviceId.trim());
+  let params = { switch: "off" };
+  if (device && device.params && device.params.switches) {
+    params = { switches: device.params.switches.map(s => ({ switch: "off", outlet: s.outlet })) };
+  } else if (device && device.params && (device.params.state !== undefined)) {
+    params = { state: "off" };
+  }
+
+  const result = await setDeviceStatus(deviceId.trim(), params);
   if (result.error === 0) {
     await ctx.replyWithMarkdown(`✅ Device \`${deviceId}\` turned *OFF*`);
   } else {
@@ -327,28 +354,41 @@ bot.command('off', async (ctx) => {
   }
 });
 
-// --- Callback Query Handler ---
-bot.on("callback_query", async (ctx) => {
-  const data = ctx.callbackQuery.data;
-  if (!data) return;
-
-  const [action, deviceId] = data.split("_");
-  if (!deviceId) {
-    return ctx.answerCbQuery("Unknown action");
+// --- Callback Queries (Inline Buttons) ---
+bot.action(/^on_(.*)$/, async (ctx) => {
+  const deviceId = ctx.match[1];
+  const devices = await fetchDevices();
+  const device = devices.find(d => d.deviceid === deviceId);
+  
+  let params = { switch: "on" };
+  if (device && device.params && device.params.switches) {
+    params = {
+      switches: device.params.switches.map(s => ({ switch: "on", outlet: s.outlet }))
+    };
+  } else if (device && device.params && (device.params.state !== undefined)) {
+    params = { state: "on" };
   }
 
-  const params = { switch: action === "on" ? "on" : "off" };
-  const emoji = action === "on" ? "⚡" : "💤";
+  await setDeviceStatus(deviceId, params);
+  await ctx.answerCbQuery("Turned ON");
+});
 
-  sendLog("info", `Callback: ${action} ${deviceId}`);
-  await ctx.answerCbQuery(`${emoji} ${action.toUpperCase()} ${deviceId}...`);
-
-  const result = await setDeviceStatus(deviceId, params);
-  if (result.error === 0) {
-    await ctx.replyWithMarkdown(`✅ Device \`${deviceId}\` turned *${action.toUpperCase()}*`);
-  } else {
-    await ctx.replyWithMarkdown(`❌ Failed: ${result.msg || "Unknown error"}`);
+bot.action(/^off_(.*)$/, async (ctx) => {
+  const deviceId = ctx.match[1];
+  const devices = await fetchDevices();
+  const device = devices.find(d => d.deviceid === deviceId);
+  
+  let params = { switch: "off" };
+  if (device && device.params && device.params.switches) {
+    params = {
+      switches: device.params.switches.map(s => ({ switch: "off", outlet: s.outlet }))
+    };
+  } else if (device && device.params && (device.params.state !== undefined)) {
+    params = { state: "off" };
   }
+
+  await setDeviceStatus(deviceId, params);
+  await ctx.answerCbQuery("Turned OFF");
 });
 
 // --- Error Handling ---
