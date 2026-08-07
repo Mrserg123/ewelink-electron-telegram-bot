@@ -110,9 +110,7 @@ function ewelinkRequest(method, path, body = null) {
 /** Fetch the list of devices (things) from eWeLink */
 async function fetchDevices() {
   try {
-    const response = await ewelinkRequest("POST", "/v2/device/thing", {
-      thingList: [],
-    });
+    const response = await ewelinkRequest("GET", "/v2/device/thing?num=0");
 
     if (response.error === 0 && response.data && response.data.thingList) {
       return response.data.thingList
