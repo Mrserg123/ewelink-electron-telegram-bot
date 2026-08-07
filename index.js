@@ -168,6 +168,42 @@ function formatDeviceLine(device, index) {
   return `${index + 1}. ${online} *${name}*  ${power}\n\`${device.deviceid}\``;
 }
 
+function getPowerHistoryKwh(params) {
+  let rawKwhData = params.hundredDaysKwhData || params.monthKwhData || params.hundredDaysKwh || params.kwhHistories || "";
+  let dailyHistory = [];
+  
+  if (Array.isArray(rawKwhData) && rawKwhData.length > 0) {
+    dailyHistory = rawKwhData.map(item => {
+      const val = typeof item === "number" ? item : parseFloat(item?.kwh || item?.val || "0");
+      return val > 100 ? val / 100 : val;
+    });
+  } else if (typeof rawKwhData === "string" && rawKwhData.length >= 2) {
+    const len = rawKwhData.length;
+    let step = 6;
+    if (len % 6 === 0) step = 6;
+    else if (len % 4 === 0) step = 4;
+    else if (len % 2 === 0) step = 2;
+
+    const maxDays = Math.min(Math.floor(len / step), 30);
+    for (let i = 0; i < maxDays; i++) {
+      const chunk = rawKwhData.substring(i * step, (i + 1) * step);
+      const rawVal = parseInt(chunk, 16);
+      if (!isNaN(rawVal)) {
+        const divisor = step === 6 ? 100 : step === 4 ? (rawVal > 10000 ? 1000 : 100) : 100;
+        dailyHistory.unshift(rawVal / divisor);
+      }
+    }
+  }
+
+  const monthTotalKwh = params.monthKwh ? parseFloat(params.monthKwh) / 100 : dailyHistory.reduce((acc, kwh) => acc + kwh, 0);
+  const todayKwh = params.dayKwh ? parseFloat(params.dayKwh) / 100 : (dailyHistory[dailyHistory.length - 1] || 0);
+
+  return {
+    todayKwh: parseFloat(todayKwh.toFixed(2)),
+    monthTotalKwh: parseFloat(monthTotalKwh.toFixed(2))
+  };
+}
+
 // --- Bot Initialization ---
 sendLog("info", `Starting ${BOT_NAME}...`);
 sendLog("info", "Validating bot token...");
@@ -304,9 +340,15 @@ bot.command('energy', async (ctx) => {
     const voltage = device.params.voltage ? (parseFloat(device.params.voltage) / 100).toFixed(2) + " V" : "N/A";
     const current = device.params.current ? (parseFloat(device.params.current) / 100).toFixed(2) + " A" : "N/A";
     
+    const { todayKwh, monthTotalKwh } = getPowerHistoryKwh(device.params);
+    const todayCost = (todayKwh * botKwhPrice).toFixed(2);
+    const monthCost = (monthTotalKwh * botKwhPrice).toFixed(2);
+    
     report += `⚡ *${name}*\n`;
     report += `Power: ${power}\n`;
-    report += `Voltage: ${voltage} | Current: ${current}\n\n`;
+    report += `Voltage: ${voltage} | Current: ${current}\n`;
+    report += `Today: ${todayKwh} kWh (≈ ${todayCost} ${botCurrency})\n`;
+    report += `This Month: ${monthTotalKwh} kWh (≈ ${monthCost} ${botCurrency})\n\n`;
   }
 
   await ctx.replyWithMarkdown(report);
