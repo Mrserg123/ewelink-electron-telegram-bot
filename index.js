@@ -179,6 +179,14 @@ bot.telegram.getMe().then((me) => {
     sendLog("info", `✅ Token valid! Bot: @${me.username} (${me.first_name})`);
     sendLog("info", `${BOT_NAME} is polling for messages...`);
     
+    // Set bot commands for auto-completion in Telegram
+    bot.telegram.setMyCommands([
+      { command: "devices", description: "List all devices with status" },
+      { command: "status", description: "Quick overview of all devices" },
+      { command: "energy", description: "Power monitoring report" },
+      { command: "help", description: "Show this message" }
+    ]).catch(err => sendLog("warn", `Failed to set commands: ${err.message}`));
+
     if (process.send) {
         process.send({ type: "status", status: "running" });
     }
